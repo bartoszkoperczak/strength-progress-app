@@ -16,8 +16,29 @@ export interface Exercise {
   movement_type: MovementType
   is_compound: boolean
   is_archived: boolean
+  is_system: boolean
+  slug: string | null
   created_at: string
 }
+
+export const SYSTEM_LIFTS = [
+  { slug: 'bench_press', name: 'Bench Press', category: 'Push' as const },
+  { slug: 'back_squat', name: 'Back Squat', category: 'Legs' as const },
+  { slug: 'deadlift', name: 'Deadlift', category: 'Pull' as const },
+  { slug: 'overhead_press', name: 'Overhead Press', category: 'Push' as const },
+  { slug: 'barbell_row', name: 'Barbell Row', category: 'Pull' as const },
+] as const
+
+export const BIG_LIFT_SLUGS = SYSTEM_LIFTS.map((l) => l.slug)
+
+/** @deprecated use SYSTEM_LIFTS */
+export const BIG_LIFTS = SYSTEM_LIFTS.map((l) => l.name) as unknown as readonly [
+  'Bench Press',
+  'Back Squat',
+  'Deadlift',
+  'Overhead Press',
+  'Barbell Row',
+]
 
 export interface Template {
   id: string
@@ -81,11 +102,3 @@ export interface LastPerformance {
 export interface WorkoutWithSets extends Workout {
   workout_sets: WorkoutSet[]
 }
-
-export const BIG_LIFTS = [
-  'Bench Press',
-  'Back Squat',
-  'Deadlift',
-  'Overhead Press',
-  'Barbell Row',
-] as const

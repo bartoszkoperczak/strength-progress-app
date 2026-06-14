@@ -35,7 +35,9 @@ npm install
 
 1. Create a project at [supabase.com](https://supabase.com)
 2. Enable **Email** auth provider (Authentication → Providers)
-3. Run the migration in `supabase/migrations/001_initial_schema.sql` via the SQL Editor
+3. Run migrations in order via the SQL Editor:
+   - `supabase/migrations/001_initial_schema.sql`
+   - `supabase/migrations/002_exercises_grants_and_system.sql` (required if you already ran 001 before grants were added)
 4. Copy your project URL and anon key from Settings → API
 
 ### 3. Environment variables

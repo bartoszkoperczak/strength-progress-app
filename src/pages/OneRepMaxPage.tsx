@@ -16,7 +16,7 @@ import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { calculateOneRm, bestSetOneRm } from '@/lib/one-rm'
-import { BIG_LIFTS } from '@/types/database'
+import { SYSTEM_LIFTS } from '@/types/database'
 import { formatDate } from '@/lib/utils'
 
 export function OneRepMaxPage() {
@@ -31,8 +31,8 @@ export function OneRepMaxPage() {
 
   const bigLiftCards = useMemo(() => {
     if (!exercises || !sets) return []
-    return BIG_LIFTS.map((name) => {
-      const ex = exercises.find((e) => e.name === name)
+    return SYSTEM_LIFTS.map(({ slug, name }) => {
+      const ex = exercises.find((e) => e.slug === slug || e.name === name)
       if (!ex) return { name, oneRm: null }
       const exSets = sets.filter((s) => s.exercise_id === ex.id && !s.is_warmup)
       const best = bestSetOneRm(exSets.map((s) => ({
@@ -48,7 +48,7 @@ export function OneRepMaxPage() {
   const [chartExercise, setChartExercise] = useState('')
 
   const chartData = useMemo(() => {
-    const exId = chartExercise || exercises?.find((e) => e.name === 'Bench Press')?.id
+    const exId = chartExercise || exercises?.find((e) => e.slug === 'bench_press' || e.name === 'Bench Press')?.id
     if (!exId || !sets) return []
     const byWorkout = new Map<string, { date: string; sets: typeof sets }>()
     for (const s of sets) {

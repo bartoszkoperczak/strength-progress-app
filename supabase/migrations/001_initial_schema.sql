@@ -16,10 +16,13 @@ CREATE TABLE exercises (
   movement_type TEXT NOT NULL DEFAULT 'barbell' CHECK (movement_type IN ('barbell', 'dumbbell', 'machine', 'bodyweight', 'cable')),
   is_compound BOOLEAN NOT NULL DEFAULT false,
   is_archived BOOLEAN NOT NULL DEFAULT false,
+  is_system BOOLEAN NOT NULL DEFAULT false,
+  slug TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX exercises_user_id_lower_name_idx ON exercises (user_id, lower(name));
+CREATE UNIQUE INDEX exercises_user_id_slug_idx ON exercises (user_id, slug) WHERE slug IS NOT NULL;
 
 -- Templates
 CREATE TABLE templates (
@@ -98,12 +101,12 @@ BEGIN
   INSERT INTO profiles (id, display_name)
   VALUES (NEW.id, COALESCE(NEW.raw_user_meta_data->>'display_name', split_part(NEW.email, '@', 1)));
 
-  INSERT INTO exercises (user_id, name, category, movement_type, is_compound) VALUES
-    (NEW.id, 'Bench Press', 'Push', 'barbell', true),
-    (NEW.id, 'Back Squat', 'Legs', 'barbell', true),
-    (NEW.id, 'Deadlift', 'Pull', 'barbell', true),
-    (NEW.id, 'Overhead Press', 'Push', 'barbell', true),
-    (NEW.id, 'Barbell Row', 'Pull', 'barbell', true);
+  INSERT INTO exercises (user_id, name, category, movement_type, is_compound, is_system, slug) VALUES
+    (NEW.id, 'Bench Press',    'Push', 'barbell', true, true, 'bench_press'),
+    (NEW.id, 'Back Squat',     'Legs', 'barbell', true, true, 'back_squat'),
+    (NEW.id, 'Deadlift',       'Pull', 'barbell', true, true, 'deadlift'),
+    (NEW.id, 'Overhead Press', 'Push', 'barbell', true, true, 'overhead_press'),
+    (NEW.id, 'Barbell Row',    'Pull', 'barbell', true, true, 'barbell_row');
 
   RETURN NEW;
 END;
@@ -112,6 +115,37 @@ $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION handle_new_user();
+
+-- Ensure defaults for existing users (callable from app)
+CREATE OR REPLACE FUNCTION ensure_default_exercises()
+RETURNS void AS $$
+DECLARE
+  uid UUID := auth.uid();
+BEGIN
+  IF uid IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  INSERT INTO profiles (id, display_name)
+  VALUES (uid, split_part((SELECT email FROM auth.users WHERE id = uid), '@', 1))
+  ON CONFLICT (id) DO NOTHING;
+
+  INSERT INTO exercises (user_id, name, category, movement_type, is_compound, is_system, slug)
+  SELECT uid, v.name, v.category, v.movement_type, true, true, v.slug
+  FROM (VALUES
+    ('Bench Press',   'Push', 'barbell', 'bench_press'),
+    ('Back Squat',    'Legs', 'barbell', 'back_squat'),
+    ('Deadlift',      'Pull', 'barbell', 'deadlift'),
+    ('Overhead Press','Push', 'barbell', 'overhead_press'),
+    ('Barbell Row',   'Pull', 'barbell', 'barbell_row')
+  ) AS v(name, category, movement_type, slug)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM exercises e
+    WHERE e.user_id = uid
+      AND (e.slug = v.slug OR lower(e.name) = lower(v.name))
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Last performance view (per user, per exercise)
 CREATE OR REPLACE VIEW last_exercise_performance AS
@@ -172,7 +206,7 @@ CREATE POLICY "Users can insert own profile" ON profiles FOR INSERT WITH CHECK (
 CREATE POLICY "Users can view own exercises" ON exercises FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "Users can insert own exercises" ON exercises FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Users can update own exercises" ON exercises FOR UPDATE USING (auth.uid() = user_id);
-CREATE POLICY "Users can delete own exercises" ON exercises FOR DELETE USING (auth.uid() = user_id);
+CREATE POLICY "Users can delete own exercises" ON exercises FOR DELETE USING (auth.uid() = user_id AND is_system = false);
 
 -- Templates policies
 CREATE POLICY "Users can view own templates" ON templates FOR SELECT USING (auth.uid() = user_id);
@@ -209,3 +243,12 @@ CREATE POLICY "Users can delete own workout sets" ON workout_sets FOR DELETE
 -- Grants for view and RPC
 GRANT SELECT ON last_exercise_performance TO authenticated;
 GRANT EXECUTE ON FUNCTION get_last_performance(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION ensure_default_exercises() TO authenticated;
+
+-- Table grants for Supabase API
+GRANT SELECT, INSERT, UPDATE, DELETE ON profiles TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON exercises TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON templates TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON template_exercises TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON workouts TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON workout_sets TO authenticated;

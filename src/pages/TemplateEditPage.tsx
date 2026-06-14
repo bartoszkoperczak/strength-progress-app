@@ -26,7 +26,7 @@ import {
   useReorderTemplateExercises,
   useUpdateTemplate,
 } from '@/features/templates/api'
-import { useExercises } from '@/features/exercises/api'
+import { useExercises, useCreateExercise } from '@/features/exercises/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -85,12 +85,15 @@ function SortableExercise({
 export function TemplateEditPage() {
   const { id } = useParams<{ id: string }>()
   const { data: template, isLoading } = useTemplate(id)
-  const { data: exercises } = useExercises()
+  const { data: exercises, isLoading: exercisesLoading } = useExercises()
+  const createExercise = useCreateExercise()
   const upsert = useUpsertTemplateExercise()
   const remove = useDeleteTemplateExercise()
   const reorder = useReorderTemplateExercises()
   const updateTemplate = useUpdateTemplate()
   const [selectedExercise, setSelectedExercise] = useState('')
+  const [newExerciseName, setNewExerciseName] = useState('')
+  const [showQuickAdd, setShowQuickAdd] = useState(false)
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -99,6 +102,32 @@ export function TemplateEditPage() {
   const items = template?.template_exercises ?? []
   const usedIds = new Set(items.map((i) => i.exercise_id))
   const available = exercises?.filter((e) => !usedIds.has(e.id)) ?? []
+  const availableSystem = available.filter((e) => e.is_system)
+  const availableCustom = available.filter((e) => !e.is_system)
+
+  const handleQuickCreate = async () => {
+    if (!newExerciseName.trim() || !id) return
+    try {
+      const created = await createExercise.mutateAsync({
+        name: newExerciseName.trim(),
+        category: 'Other',
+        movement_type: 'barbell',
+        is_compound: false,
+      })
+      await upsert.mutateAsync({
+        template_id: id,
+        exercise_id: created.id,
+        sort_order: items.length,
+        target_sets: 3,
+        target_reps: 8,
+      })
+      setNewExerciseName('')
+      setShowQuickAdd(false)
+      toast.success('Exercise created and added to template')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create exercise')
+    }
+  }
 
   const handleAdd = async () => {
     if (!selectedExercise || !id) return
@@ -181,19 +210,58 @@ export function TemplateEditPage() {
       <Card>
         <CardHeader><CardTitle>Exercises</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             <Select
               className="flex-1"
               value={selectedExercise}
               onChange={(e) => setSelectedExercise(e.target.value)}
+              disabled={exercisesLoading}
             >
-              <option value="">Select exercise...</option>
-              {available.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              <option value="">
+                {exercisesLoading ? 'Loading exercises...' : 'Select exercise...'}
+              </option>
+              {availableSystem.length > 0 && (
+                <optgroup label="System lifts (1RM)">
+                  {availableSystem.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </optgroup>
+              )}
+              {availableCustom.length > 0 && (
+                <optgroup label="Your exercises">
+                  {availableCustom.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </optgroup>
+              )}
             </Select>
             <Button onClick={handleAdd} disabled={!selectedExercise}>
               <Plus className="h-4 w-4" /> Add
             </Button>
           </div>
+
+          {!showQuickAdd ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowQuickAdd(true)}>
+              <Plus className="h-4 w-4" /> Create new exercise
+            </Button>
+          ) : (
+            <div className="flex flex-col gap-2 rounded-lg border border-slate-800 p-3 sm:flex-row">
+              <Input
+                placeholder="New exercise name"
+                value={newExerciseName}
+                onChange={(e) => setNewExerciseName(e.target.value)}
+              />
+              <Button onClick={handleQuickCreate} disabled={!newExerciseName.trim() || createExercise.isPending}>
+                Create & add
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => setShowQuickAdd(false)}>Cancel</Button>
+            </div>
+          )}
+
+          {available.length === 0 && !exercisesLoading && exercises && exercises.length > 0 && (
+            <p className="text-sm text-slate-400">All exercises are already in this template.</p>
+          )}
+          {exercises?.length === 0 && !exercisesLoading && (
+            <p className="text-sm text-amber-400">
+              No exercises found. Run migration 002 in Supabase or refresh after login to seed system lifts.
+            </p>
+          )}
 
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
