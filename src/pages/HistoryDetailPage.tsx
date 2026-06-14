@@ -1,15 +1,19 @@
 import { useMemo } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
-import { useWorkout } from '@/features/workouts/api'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ArrowLeft, Trash2 } from 'lucide-react'
+import { toast } from 'sonner'
+import { useWorkout, useDeleteWorkout } from '@/features/workouts/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatDateTime, formatDuration } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 
 export function HistoryDetailPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const { data: workout, isLoading } = useWorkout(id)
+  const deleteWorkout = useDeleteWorkout()
 
   const grouped = useMemo(() => {
     if (!workout?.workout_sets) return []
@@ -26,22 +30,46 @@ export function HistoryDetailPage() {
     }))
   }, [workout])
 
+  const handleDelete = async () => {
+    if (!id || !workout) return
+    const name = workout.template?.name ?? 'Workout'
+    if (!confirm(`Delete "${name}" from history? This cannot be undone.`)) return
+    try {
+      await deleteWorkout.mutateAsync(id)
+      toast.success('Workout deleted')
+      navigate('/history')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to delete workout')
+    }
+  }
+
   if (isLoading) return <Skeleton className="h-64 w-full" />
   if (!workout) return <p>Workout not found</p>
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link to="/history" className="text-slate-400 hover:text-slate-200">
-          <ArrowLeft className="h-5 w-5" />
-        </Link>
-        <div>
-          <h1 className="text-xl font-bold">{workout.template?.name ?? 'Workout'}</h1>
-          <p className="text-sm text-slate-400">
-            {formatDateTime(workout.completed_at ?? workout.started_at)}
-            {workout.completed_at && ` · ${formatDuration(workout.started_at, workout.completed_at)}`}
-          </p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Link to="/history" className="text-slate-400 hover:text-slate-200">
+            <ArrowLeft className="h-5 w-5" />
+          </Link>
+          <div>
+            <h1 className="text-xl font-bold">{workout.template?.name ?? 'Workout'}</h1>
+            <p className="text-sm text-slate-400">
+              {formatDateTime(workout.completed_at ?? workout.started_at)}
+              {workout.completed_at && ` · ${formatDuration(workout.started_at, workout.completed_at)}`}
+            </p>
+          </div>
         </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0 border-red-500/50 text-red-400 hover:bg-red-500/10"
+          disabled={deleteWorkout.isPending}
+          onClick={handleDelete}
+        >
+          <Trash2 className="h-4 w-4" /> Delete
+        </Button>
       </div>
 
       <div className="space-y-4">

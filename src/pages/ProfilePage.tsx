@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LogOut, Dumbbell, Calculator } from 'lucide-react'
+import { LogOut, Calculator } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/features/auth/AuthProvider'
 import { supabase } from '@/lib/supabase'
@@ -63,11 +63,8 @@ export function ProfilePage() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>Quick links</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Account</CardTitle></CardHeader>
         <CardContent className="space-y-2">
-          <Link to="/exercises" className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-800">
-            <Dumbbell className="h-4 w-4" /> Exercise library
-          </Link>
           <Link to="/one-rep-max" className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-800">
             <Calculator className="h-4 w-4" /> 1RM calculator
           </Link>

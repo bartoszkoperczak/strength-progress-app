@@ -1,10 +1,11 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Dumbbell, ListOrdered, History, User, Plus } from 'lucide-react'
+import { LayoutDashboard, Dumbbell, ListOrdered, History, User, Plus, BookOpen } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { OfflineBanner } from '@/hooks/useOnlineStatus'
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/exercises', icon: BookOpen, label: 'Exercises' },
   { to: '/templates', icon: ListOrdered, label: 'Templates' },
   { to: '/workout', icon: Plus, label: 'Workout', highlight: true },
   { to: '/history', icon: History, label: 'History' },
@@ -45,21 +46,21 @@ export function AppLayout() {
       </main>
 
       <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-slate-800 bg-slate-950/95 backdrop-blur md:hidden">
-        <div className="flex items-center justify-around px-2 py-2">
+        <div className="grid grid-cols-6 px-1 py-2">
           {navItems.map(({ to, icon: Icon, label, highlight }) => (
             <NavLink
               key={to}
               to={to}
               className={({ isActive }) =>
                 cn(
-                  'flex min-w-[4rem] flex-col items-center gap-1 rounded-lg px-2 py-2 text-xs',
+                  'flex flex-col items-center gap-0.5 rounded-lg px-1 py-1.5 text-[10px] leading-tight',
                   highlight && 'text-emerald-400',
                   isActive ? 'text-emerald-400' : 'text-slate-500',
                 )
               }
             >
               <Icon className={cn('h-5 w-5', highlight && 'h-6 w-6')} />
-              <span>{label}</span>
+              <span className="truncate">{label}</span>
             </NavLink>
           ))}
         </div>

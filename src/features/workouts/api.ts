@@ -158,6 +158,23 @@ export function useDeleteWorkoutSet() {
   })
 }
 
+export function useDeleteWorkout() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (workoutId: string) => {
+      const { error } = await supabase.from('workouts').delete().eq('id', workoutId)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workouts'] })
+      qc.invalidateQueries({ queryKey: ['workout'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
+      qc.invalidateQueries({ queryKey: ['last-performance'] })
+      qc.invalidateQueries({ queryKey: ['dashboard', 'sets'] })
+    },
+  })
+}
+
 export function useLastPerformance(exerciseId: string | undefined) {
   return useQuery({
     queryKey: ['last-performance', exerciseId],
