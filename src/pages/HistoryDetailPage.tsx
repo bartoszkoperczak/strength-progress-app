@@ -1,13 +1,15 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, Trash2, Pencil, X, Plus } from 'lucide-react'
+import { ArrowLeft, Trash2, Pencil, X, Plus, Trophy } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   useWorkout,
   useDeleteWorkout,
   useUpsertWorkoutSet,
   useDeleteWorkoutSet,
+  useWorkoutSetsForDashboard,
 } from '@/features/workouts/api'
+import { calculateExercisePRRecords, identifyPRsInWorkout } from '@/lib/pr'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -25,6 +27,19 @@ interface EditSetDraft {
   reps: number
   rir: number
   is_warmup: boolean
+}
+
+/**
+ * Compute PR records per exercise from ALL completed workout sets,
+ * as of BEFORE this workout (to determine if a set in this workout was a PR).
+ */
+function useHistoricalPrRecordsBefore(workoutCompletedAt: string | null | undefined) {
+  const { data: allSets } = useWorkoutSetsForDashboard()
+
+  return useMemo(() => {
+    if (!allSets || !workoutCompletedAt) return new Map()
+    return calculateExercisePRRecords(allSets, workoutCompletedAt)
+  }, [allSets, workoutCompletedAt])
 }
 
 function EditableExerciseBlock({
@@ -201,6 +216,9 @@ export function HistoryDetailPage() {
   const deleteWorkout = useDeleteWorkout()
   const [isEditing, setIsEditing] = useState(false)
 
+  // Compute historical PR records as of before this workout, for PR detection
+  const prRecordsBefore = useHistoricalPrRecordsBefore(workout?.completed_at)
+
   const grouped = useMemo(() => {
     if (!workout?.workout_sets) return []
     const map = new Map<string, typeof workout.workout_sets>()
@@ -219,13 +237,13 @@ export function HistoryDetailPage() {
   // Also add exercise groups from template that have no sets yet (for adding sets in edit mode)
   const allExerciseGroups = useMemo(() => {
     if (!workout) return grouped
-    const templateExercises = (workout.template as any)?.template_exercises ?? []
+    const templateExercises = workout.template?.template_exercises ?? []
     const existingIds = new Set(grouped.map((g) => g.exerciseId))
     const missing = templateExercises
-      .filter((te: any) => !existingIds.has(te.exercise_id))
-      .map((te: any) => ({
-        exerciseId: te.exercise_id as string,
-        name: (te.exercise?.name ?? 'Exercise') as string,
+      .filter((te) => !existingIds.has(te.exercise_id))
+      .map((te) => ({
+        exerciseId: te.exercise_id,
+        name: te.exercise?.name ?? 'Exercise',
         sets: [] as WorkoutSet[],
       }))
     return [...grouped, ...missing]
@@ -298,25 +316,53 @@ export function HistoryDetailPage() {
             />
           ))
         ) : (
-          grouped.map(({ exerciseId, name, sets }) => (
-            <Card key={exerciseId}>
-              <CardHeader>
-                <CardTitle>{name}</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {sets.map((s) => (
-                  <div key={s.id} className="flex items-center justify-between rounded-lg bg-slate-800/50 px-3 py-2 text-sm">
-                    <span className="text-slate-400">Set {s.set_number}</span>
-                    <div className="flex items-center gap-3">
-                      {s.is_warmup && <Badge variant="secondary">Warmup</Badge>}
-                      <span className="font-medium">{s.weight_kg} kg × {s.reps}</span>
-                      <span className="text-slate-400">RIR {s.rir}</span>
-                    </div>
+          grouped.map(({ exerciseId, name, sets }) => {
+            const recordBefore = prRecordsBefore.get(exerciseId)
+            const prSetNumbers = identifyPRsInWorkout(sets, recordBefore)
+            const exerciseHasPR = prSetNumbers.size > 0
+
+            return (
+              <Card key={exerciseId} className={exerciseHasPR ? 'border-amber-500/30' : undefined}>
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <CardTitle>{name}</CardTitle>
+                    {exerciseHasPR && (
+                      <Badge variant="pr">
+                        <Trophy className="mr-1 h-3 w-3" />PR
+                      </Badge>
+                    )}
                   </div>
-                ))}
-              </CardContent>
-            </Card>
-          ))
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {sets.map((s) => {
+                    const isPR = prSetNumbers.has(s.set_number)
+                    return (
+                      <div
+                        key={s.id}
+                        className={`flex items-center justify-between rounded-lg px-3 py-2 text-sm ${
+                          isPR ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-slate-800/50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-400">Set {s.set_number}</span>
+                          {isPR && (
+                            <Badge variant="pr" className="text-[10px] px-1.5 py-0">
+                              <Trophy className="mr-0.5 h-2.5 w-2.5" />PR
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3">
+                          {s.is_warmup && <Badge variant="secondary">Warmup</Badge>}
+                          <span className="font-medium">{s.weight_kg} kg × {s.reps}</span>
+                          <span className="text-slate-400">RIR {s.rir}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </CardContent>
+              </Card>
+            )
+          })
         )}
       </div>
     </div>

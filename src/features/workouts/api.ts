@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import type { LastPerformance, Workout, WorkoutSet, WorkoutWithSets } from '@/types/database'
+import { calculateExercisePRRecords } from '@/lib/pr'
+
 
 export function useWorkouts(status?: string) {
   return useQuery({
@@ -102,6 +104,7 @@ export function useCompleteWorkout() {
       qc.invalidateQueries({ queryKey: ['workout'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
       qc.invalidateQueries({ queryKey: ['last-performance'] })
+      qc.invalidateQueries({ queryKey: ['exercise-prs'] })
     },
   })
 }
@@ -200,6 +203,7 @@ export function useBatchUpsertWorkoutSets() {
       qc.invalidateQueries({ queryKey: ['workouts'] })
       qc.invalidateQueries({ queryKey: ['dashboard'] })
       qc.invalidateQueries({ queryKey: ['last-performance'] })
+      qc.invalidateQueries({ queryKey: ['exercise-prs'] })
     },
   })
 }
@@ -231,6 +235,7 @@ export function useDeleteWorkout() {
       qc.invalidateQueries({ queryKey: ['dashboard'] })
       qc.invalidateQueries({ queryKey: ['last-performance'] })
       qc.invalidateQueries({ queryKey: ['dashboard', 'sets'] })
+      qc.invalidateQueries({ queryKey: ['exercise-prs'] })
     },
   })
 }
@@ -304,3 +309,51 @@ export function useWorkoutSetsForDashboard() {
     },
   })
 }
+
+/**
+ * Fetch the maximum weight ever lifted for each exercise
+ * from completed workouts (excluding warmup sets).
+ * Returns a Map<exerciseId, maxWeightKg>.
+ */
+export function useExerciseMaxWeights() {
+  return useQuery({
+    queryKey: ['exercise-max-weights'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('workout_sets')
+        .select('exercise_id, weight_kg, workout:workouts!inner(status)')
+        .eq('workout.status', 'completed')
+        .eq('is_warmup', false)
+        .order('weight_kg', { ascending: false })
+      if (error) throw error
+
+      const maxMap = new Map<string, number>()
+      for (const row of data ?? []) {
+        const weight = Number(row.weight_kg)
+        const current = maxMap.get(row.exercise_id) ?? 0
+        if (weight > current) {
+          maxMap.set(row.exercise_id, weight)
+        }
+      }
+      return maxMap
+    },
+  })
+}
+
+export function useExercisePRs() {
+  return useQuery({
+    queryKey: ['exercise-prs'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('workout_sets')
+        .select('*, workout:workouts!inner(status, completed_at)')
+        .eq('workout.status', 'completed')
+        .eq('is_warmup', false)
+      if (error) throw error
+
+      return calculateExercisePRRecords(data ?? [])
+    },
+  })
+}
+
+

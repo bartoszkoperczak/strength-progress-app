@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
-  LineChart,
-  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   Tooltip,
@@ -18,6 +18,29 @@ import { Badge } from '@/components/ui/badge'
 import { calculateOneRm, bestSetOneRm } from '@/lib/one-rm'
 import { SYSTEM_LIFTS } from '@/types/database'
 import { formatDate } from '@/lib/utils'
+
+interface CustomTooltipProps {
+  active?: boolean
+  payload?: Array<{ value: number | string }>
+  label?: string
+}
+
+function CustomTooltip({ active, payload, label }: CustomTooltipProps) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="rounded-xl border border-slate-700 bg-slate-900/95 p-3 shadow-xl backdrop-blur-md">
+        <p className="text-xs font-semibold text-slate-400">{label}</p>
+        <div className="mt-1 flex items-baseline gap-1.5">
+          <span className="text-xs text-slate-300">Est. 1RM:</span>
+          <span className="text-lg font-bold text-emerald-400">{payload[0].value}</span>
+          <span className="text-xs text-slate-400 font-medium">kg</span>
+        </div>
+      </div>
+    )
+  }
+  return null
+}
+
 
 export function OneRepMaxPage() {
   const { data: exercises } = useExercises()
@@ -72,6 +95,16 @@ export function OneRepMaxPage() {
       })
       .filter((d) => d.oneRm > 0)
   }, [sets, exercises, chartExercise])
+
+  const yDomain = useMemo<[number, number]>(() => {
+    if (chartData.length === 0) return [0, 100]
+    const values = chartData.map((d) => d.oneRm)
+    const min = Math.min(...values)
+    const max = Math.max(...values)
+    const diff = max - min
+    const padding = Math.max(diff * 0.1, 5) // at least 5kg padding
+    return [Math.max(0, Math.floor(min - padding)), Math.ceil(max + padding)]
+  }, [chartData])
 
   return (
     <div className="space-y-6">
@@ -148,19 +181,49 @@ export function OneRepMaxPage() {
             {exercises?.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </CardHeader>
-        <CardContent className="h-64">
+        <CardContent className="h-80 pt-6">
           {chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="date" stroke="#94a3b8" fontSize={12} />
-                <YAxis stroke="#94a3b8" fontSize={12} />
-                <Tooltip contentStyle={{ background: '#1e293b', border: 'none' }} />
-                <Line type="monotone" dataKey="oneRm" stroke="#10b981" strokeWidth={2} />
-              </LineChart>
+              <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="color1Rm" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" vertical={false} />
+                <XAxis 
+                  dataKey="date" 
+                  stroke="#64748b" 
+                  fontSize={11} 
+                  axisLine={false} 
+                  tickLine={false} 
+                  dy={10} 
+                />
+                <YAxis 
+                  domain={yDomain} 
+                  stroke="#64748b" 
+                  fontSize={11} 
+                  axisLine={false} 
+                  tickLine={false}
+                  width={40}
+                />
+                <Tooltip content={<CustomTooltip />} cursor={{ stroke: '#334155', strokeWidth: 1 }} />
+                <Area 
+                  type="monotone" 
+                  dataKey="oneRm" 
+                  stroke="#10b981" 
+                  strokeWidth={3} 
+                  fill="url(#color1Rm)" 
+                  dot={{ fill: '#10b981', r: 4, strokeWidth: 1.5, stroke: '#020617' }}
+                  activeDot={{ fill: '#34d399', r: 6, strokeWidth: 2, stroke: '#020617' }}
+                />
+              </AreaChart>
             </ResponsiveContainer>
           ) : (
-            <p className="flex h-full items-center justify-center text-slate-400">Log workouts to see 1RM history</p>
+            <div className="flex h-full items-center justify-center text-slate-400">
+              <p>Log workouts to see 1RM history</p>
+            </div>
           )}
         </CardContent>
       </Card>

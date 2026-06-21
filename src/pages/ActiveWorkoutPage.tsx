@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Check, Copy, Plus, ArrowLeft } from 'lucide-react'
+import { Check, Copy, Plus, ArrowLeft, Trophy } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   useWorkout,
@@ -9,7 +9,10 @@ import {
   useDeleteWorkoutSet,
   useBatchUpsertWorkoutSets,
   useLastPerformance,
+  useExercisePRs,
 } from '@/features/workouts/api'
+import { checkIsPR, identifyPRsInWorkout, type ExercisePRRecord } from '@/lib/pr'
+
 import { Button } from '@/components/ui/button'
 import { NumericInput } from '@/components/ui/NumericInput'
 import { Label } from '@/components/ui/label'
@@ -56,6 +59,7 @@ function ExerciseBlock({
   workoutId,
   existingSets,
   registerCollector,
+  historicalRecord,
 }: {
   exerciseId: string
   exerciseName: string
@@ -64,6 +68,7 @@ function ExerciseBlock({
   workoutId: string
   existingSets: WorkoutSet[]
   registerCollector: (exerciseId: string, collector: DraftCollector) => void
+  historicalRecord: ExercisePRRecord | undefined
 }) {
   const upsert = useUpsertWorkoutSet(/* skipInvalidation */ true)
   const remove = useDeleteWorkoutSet()
@@ -76,23 +81,23 @@ function ExerciseBlock({
 
   const [drafts, setDrafts] = useState<SetDraft[]>([])
   const initializedRef = useRef(false)
+  
+  // Track the weight/reps/rir we've already toasted for each set_number
+  const toastedValuesRef = useRef<Map<number, string>>(new Map())
+
+  // Dynamically calculate which set numbers are PRs in this session
+  const prSetNumbers = useMemo(() => {
+    return identifyPRsInWorkout(drafts, historicalRecord)
+  }, [drafts, historicalRecord])
 
   // Initialize drafts ONCE from server data (or template defaults)
-  // Only re-initialize if we haven't initialized yet, or if exerciseSets
-  // grow from the server side (e.g., page reload after screen lock)
   useEffect(() => {
     if (initializedRef.current) {
-      // After initial load, only patch in new IDs for sets that were saved
-      // but don't overwrite the user's in-progress edits
       setDrafts((prev) => {
-        // If server has sets that our drafts don't know about (e.g., page refresh),
-        // merge them in
         const prevIds = new Set(prev.map((d) => d.id).filter(Boolean))
         const newServerSets = exerciseSets.filter((s) => !prevIds.has(s.id))
-
         if (newServerSets.length === 0) return prev
 
-        // Only add truly new sets (set_numbers we don't have)
         const prevSetNumbers = new Set(prev.map((d) => d.set_number))
         const toAdd = newServerSets
           .filter((s) => !prevSetNumbers.has(s.set_number))
@@ -113,6 +118,7 @@ function ExerciseBlock({
     }
 
     if (exerciseSets.length > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDrafts(
         exerciseSets.map((s) => ({
           id: s.id,
@@ -126,7 +132,6 @@ function ExerciseBlock({
       )
       initializedRef.current = true
     } else if (lastPerf !== undefined) {
-      // lastPerf query has settled (even if null)
       setDrafts(
         Array.from({ length: targetSets }, (_, i) => ({
           set_number: i + 1,
@@ -152,7 +157,7 @@ function ExerciseBlock({
 
   const saveSet = useCallback(
     async (draft: SetDraft, index: number) => {
-      if (savingRef.current) return // Prevent concurrent saves for same set
+      if (savingRef.current) return
       savingRef.current = true
       try {
         const result = await upsert.mutateAsync({
@@ -165,6 +170,7 @@ function ExerciseBlock({
           rir: draft.rir,
           is_warmup: draft.is_warmup,
         })
+
         // Patch the returned ID into the local draft
         setDrafts((prev) => {
           const next = [...prev]
@@ -173,13 +179,32 @@ function ExerciseBlock({
           }
           return next
         })
+
+        const isPR = prSetNumbers.has(draft.set_number)
+        const valStr = `${draft.weight_kg}-${draft.reps}-${draft.rir}`
+
+        // Show PR toast (only once per unique set configuration)
+        if (isPR && toastedValuesRef.current.get(draft.set_number) !== valStr) {
+          toastedValuesRef.current.set(draft.set_number, valStr)
+
+          const checkResult = checkIsPR(
+            { weight_kg: draft.weight_kg, reps: draft.reps, rir: draft.rir, is_warmup: draft.is_warmup },
+            historicalRecord
+          )
+          
+          const reasonText = checkResult.reasons.join(', ')
+          toast.success(
+            `🏆 New PR! ${exerciseName} — ${draft.weight_kg} kg × ${draft.reps} (${reasonText})`,
+            { duration: 5000 }
+          )
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to save set')
       } finally {
         savingRef.current = false
       }
     },
-    [upsert, workoutId, exerciseId],
+    [upsert, workoutId, exerciseId, exerciseName, prSetNumbers, drafts, historicalRecord],
   )
 
   const scheduleSave = useCallback(
@@ -201,7 +226,8 @@ function ExerciseBlock({
   const updateDraft = (index: number, patch: Partial<SetDraft>) => {
     setDrafts((prev) => {
       const next = [...prev]
-      next[index] = { ...next[index], ...patch, dirty: true }
+      const updated = { ...next[index], ...patch, dirty: true }
+      next[index] = updated
       return next
     })
     scheduleSave(index)
@@ -244,88 +270,114 @@ function ExerciseBlock({
     updateDraft(index, { weight_kg: newWeight })
   }
 
+  const hasPR = prSetNumbers.size > 0
+
   return (
-    <Card>
+    <Card className={hasPR ? 'border-amber-500/30' : undefined}>
       <CardHeader>
         <div className="flex items-center justify-between">
-          <CardTitle>{exerciseName}</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle>{exerciseName}</CardTitle>
+            {hasPR && (
+              <Badge variant="pr">
+                <Trophy className="mr-1 h-3 w-3" />PR
+              </Badge>
+            )}
+          </div>
           <Badge variant="outline">{targetSets}×{targetReps}</Badge>
         </div>
         <LastTimeBanner exerciseId={exerciseId} />
       </CardHeader>
       <CardContent className="space-y-3">
-        {drafts.map((draft, index) => (
-          <div key={draft.set_number} className="rounded-lg border border-slate-800 p-3 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-slate-400">Set {draft.set_number}</span>
-              <div className="flex items-center gap-2">
-                {draft.dirty && (
-                  <span className="h-2 w-2 rounded-full bg-amber-400" title="Unsaved changes" />
-                )}
-                <label className="flex items-center gap-2 text-xs text-slate-400">
-                  <Checkbox
-                    checked={draft.is_warmup}
-                    onChange={(e) => updateDraft(index, { is_warmup: e.target.checked })}
+        {drafts.map((draft, index) => {
+          const isPR = prSetNumbers.has(draft.set_number)
+          return (
+            <div
+              key={draft.set_number}
+              className={`rounded-lg border p-3 space-y-3 ${
+                isPR
+                  ? 'border-amber-500/40 bg-amber-500/5'
+                  : 'border-slate-800'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-slate-400">Set {draft.set_number}</span>
+                  {isPR && (
+                    <Badge variant="pr" className="text-[10px] px-1.5 py-0">
+                      <Trophy className="mr-0.5 h-2.5 w-2.5" />PR
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {draft.dirty && (
+                    <span className="h-2 w-2 rounded-full bg-amber-400" title="Unsaved changes" />
+                  )}
+                  <label className="flex items-center gap-2 text-xs text-slate-400">
+                    <Checkbox
+                      checked={draft.is_warmup}
+                      onChange={(e) => updateDraft(index, { is_warmup: e.target.checked })}
+                    />
+                    Warmup
+                  </label>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label className="text-xs">kg</Label>
+                  <NumericInput
+                    value={draft.weight_kg}
+                    onValueChange={(v) => updateDraft(index, { weight_kg: v })}
+                    onBlur={() => handleBlurSave(index)}
+                    min={0}
+                    step={0.25}
+                    allowDecimal
                   />
-                  Warmup
-                </label>
+                </div>
+                <div>
+                  <Label className="text-xs">Reps</Label>
+                  <NumericInput
+                    value={draft.reps}
+                    onValueChange={(v) => updateDraft(index, { reps: v })}
+                    onBlur={() => handleBlurSave(index)}
+                    min={0}
+                    max={999}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">RIR</Label>
+                  <NumericInput
+                    value={draft.rir}
+                    onValueChange={(v) => updateDraft(index, { rir: v })}
+                    onBlur={() => handleBlurSave(index)}
+                    min={0}
+                    max={10}
+                  />
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div>
-                <Label className="text-xs">kg</Label>
-                <NumericInput
-                  value={draft.weight_kg}
-                  onValueChange={(v) => updateDraft(index, { weight_kg: v })}
-                  onBlur={() => handleBlurSave(index)}
-                  min={0}
-                  step={0.25}
-                  allowDecimal
-                />
-              </div>
-              <div>
-                <Label className="text-xs">Reps</Label>
-                <NumericInput
-                  value={draft.reps}
-                  onValueChange={(v) => updateDraft(index, { reps: v })}
-                  onBlur={() => handleBlurSave(index)}
-                  min={0}
-                  max={999}
-                />
-              </div>
-              <div>
-                <Label className="text-xs">RIR</Label>
-                <NumericInput
-                  value={draft.rir}
-                  onValueChange={(v) => updateDraft(index, { rir: v })}
-                  onBlur={() => handleBlurSave(index)}
-                  min={0}
-                  max={10}
-                />
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => copyLast(index)} disabled={!lastPerf}>
-                <Copy className="h-3 w-3" /> Copy last
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => addWeight(index)}>
-                +2.5 kg
-              </Button>
-              {draft.id && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={async () => {
-                    await remove.mutateAsync({ id: draft.id!, workoutId })
-                    setDrafts((d) => d.filter((_, i) => i !== index).map((s, i) => ({ ...s, set_number: i + 1 })))
-                  }}
-                >
-                  Remove
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => copyLast(index)} disabled={!lastPerf}>
+                  <Copy className="h-3 w-3" /> Copy last
                 </Button>
-              )}
+                <Button size="sm" variant="outline" onClick={() => addWeight(index)}>
+                  +2.5 kg
+                </Button>
+                {draft.id && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={async () => {
+                      await remove.mutateAsync({ id: draft.id!, workoutId })
+                      setDrafts((d) => d.filter((_, i) => i !== index).map((s, i) => ({ ...s, set_number: i + 1 })))
+                    }}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
         <Button variant="outline" size="sm" onClick={addSet}>
           <Plus className="h-4 w-4" /> Add set
         </Button>
@@ -340,6 +392,7 @@ export function ActiveWorkoutPage() {
   const { data: workout, isLoading } = useWorkout(id)
   const completeWorkout = useCompleteWorkout()
   const batchUpsert = useBatchUpsertWorkoutSets()
+  const { data: exercisePRs } = useExercisePRs()
 
   const templateExercises = useMemo(() => {
     const tes = workout?.template?.template_exercises ?? []
@@ -355,7 +408,6 @@ export function ActiveWorkoutPage() {
   const handleComplete = async () => {
     if (!id) return
     try {
-      // Batch save all unsaved drafts first
       const allUnsaved: Array<{
         workout_id: string
         exercise_id: string
@@ -425,6 +477,7 @@ export function ActiveWorkoutPage() {
             workoutId={workout.id}
             existingSets={workout.workout_sets ?? []}
             registerCollector={registerCollector}
+            historicalRecord={exercisePRs?.get(te.exercise_id)}
           />
         ))}
       </div>
