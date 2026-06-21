@@ -75,10 +75,29 @@ export function useDeleteTemplate() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (id: string) => {
+      // template_exercises have ON DELETE CASCADE — DB handles them automatically.
+      // workouts.template_id has ON DELETE SET NULL — DB handles it automatically.
+      //
+      // Manual pre-cleanup as fallback (safe even if DB already handles it):
+      // This ensures deletion works even before migration 003 is applied.
+      await supabase
+        .from('template_exercises')
+        .delete()
+        .eq('template_id', id)
+
+      await supabase
+        .from('workouts')
+        .update({ template_id: null })
+        .eq('template_id', id)
+
       const { error } = await supabase.from('templates').delete().eq('id', id)
       if (error) throw error
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['templates'] })
+      qc.invalidateQueries({ queryKey: ['workouts'] })
+      qc.invalidateQueries({ queryKey: ['workout'] })
+    },
   })
 }
 

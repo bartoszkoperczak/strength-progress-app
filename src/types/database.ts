@@ -69,7 +69,7 @@ export interface TemplateWithExercises extends Template {
 export interface Workout {
   id: string
   user_id: string
-  template_id: string
+  template_id: string | null
   started_at: string
   completed_at: string | null
   notes: string | null
