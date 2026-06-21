@@ -11,7 +11,7 @@ import {
 import { useExercises } from '@/features/exercises/api'
 import { useWorkoutSetsForDashboard } from '@/features/workouts/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { NumericInput } from '@/components/ui/NumericInput'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
@@ -100,15 +100,15 @@ export function OneRepMaxPage() {
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2">
               <Label>Weight (kg)</Label>
-              <Input type="number" value={weight} onChange={(e) => setWeight(Number(e.target.value))} />
+              <NumericInput value={weight} onValueChange={setWeight} min={0} allowDecimal />
             </div>
             <div className="space-y-2">
               <Label>Reps</Label>
-              <Input type="number" value={reps} onChange={(e) => setReps(Number(e.target.value))} />
+              <NumericInput value={reps} onValueChange={setReps} min={1} max={100} />
             </div>
             <div className="space-y-2">
               <Label>RIR {useRir ? '' : '(disabled)'}</Label>
-              <Input type="number" value={rir} disabled={!useRir} onChange={(e) => setRir(Number(e.target.value))} />
+              <NumericInput value={rir} onValueChange={setRir} min={0} max={10} disabled={!useRir} />
             </div>
           </div>
           <label className="flex items-center gap-2 text-sm">

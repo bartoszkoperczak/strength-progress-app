@@ -106,7 +106,12 @@ export function useCompleteWorkout() {
   })
 }
 
-export function useUpsertWorkoutSet() {
+/**
+ * Upsert a single workout set.
+ * When `skipInvalidation` is true (used during active workout editing),
+ * the workout query is NOT invalidated — the caller patches local state directly.
+ */
+export function useUpsertWorkoutSet(skipInvalidation = false) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: {
@@ -139,7 +144,62 @@ export function useUpsertWorkoutSet() {
       return data as WorkoutSet
     },
     onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: ['workout', vars.workout_id] })
+      if (!skipInvalidation) {
+        qc.invalidateQueries({ queryKey: ['workout', vars.workout_id] })
+      }
+    },
+  })
+}
+
+/**
+ * Batch upsert workout sets — used when finishing an active workout
+ * to ensure all local drafts are persisted.
+ */
+export function useBatchUpsertWorkoutSets() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (inputs: Array<{
+      id?: string
+      workout_id: string
+      exercise_id: string
+      set_number: number
+      weight_kg: number
+      reps: number
+      rir: number
+      is_warmup: boolean
+    }>) => {
+      const results: WorkoutSet[] = []
+      for (const input of inputs) {
+        const { id, ...rest } = input
+        if (id) {
+          const { data, error } = await supabase
+            .from('workout_sets')
+            .update(rest)
+            .eq('id', id)
+            .select()
+            .single()
+          if (error) throw error
+          results.push(data as WorkoutSet)
+        } else {
+          const { data, error } = await supabase
+            .from('workout_sets')
+            .insert(rest)
+            .select()
+            .single()
+          if (error) throw error
+          results.push(data as WorkoutSet)
+        }
+      }
+      return results
+    },
+    onSuccess: (_, vars) => {
+      const workoutId = vars[0]?.workout_id
+      if (workoutId) {
+        qc.invalidateQueries({ queryKey: ['workout', workoutId] })
+      }
+      qc.invalidateQueries({ queryKey: ['workouts'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
+      qc.invalidateQueries({ queryKey: ['last-performance'] })
     },
   })
 }
@@ -171,6 +231,30 @@ export function useDeleteWorkout() {
       qc.invalidateQueries({ queryKey: ['dashboard'] })
       qc.invalidateQueries({ queryKey: ['last-performance'] })
       qc.invalidateQueries({ queryKey: ['dashboard', 'sets'] })
+    },
+  })
+}
+
+/**
+ * Reopen a completed workout for editing.
+ */
+export function useReopenWorkout() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (workoutId: string) => {
+      const { data, error } = await supabase
+        .from('workouts')
+        .update({ status: 'in_progress', completed_at: null })
+        .eq('id', workoutId)
+        .select()
+        .single()
+      if (error) throw error
+      return data as Workout
+    },
+    onSuccess: (_, workoutId) => {
+      qc.invalidateQueries({ queryKey: ['workout', workoutId] })
+      qc.invalidateQueries({ queryKey: ['workouts'] })
+      qc.invalidateQueries({ queryKey: ['workout', 'in_progress'] })
     },
   })
 }

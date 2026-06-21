@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { Check, Copy, Plus, ArrowLeft } from 'lucide-react'
 import { toast } from 'sonner'
@@ -7,10 +7,11 @@ import {
   useCompleteWorkout,
   useUpsertWorkoutSet,
   useDeleteWorkoutSet,
+  useBatchUpsertWorkoutSets,
   useLastPerformance,
 } from '@/features/workouts/api'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { NumericInput } from '@/components/ui/NumericInput'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -26,6 +27,8 @@ interface SetDraft {
   reps: number
   rir: number
   is_warmup: boolean
+  /** True if this draft has unsaved changes */
+  dirty: boolean
 }
 
 function LastTimeBanner({ exerciseId }: { exerciseId: string }) {
@@ -39,6 +42,12 @@ function LastTimeBanner({ exerciseId }: { exerciseId: string }) {
   )
 }
 
+/**
+ * Register a callback to collect unsaved drafts from this exercise block.
+ * This lets the parent "Finish" button batch-save everything.
+ */
+type DraftCollector = () => SetDraft[]
+
 function ExerciseBlock({
   exerciseId,
   exerciseName,
@@ -46,6 +55,7 @@ function ExerciseBlock({
   targetReps,
   workoutId,
   existingSets,
+  registerCollector,
 }: {
   exerciseId: string
   exerciseName: string
@@ -53,8 +63,9 @@ function ExerciseBlock({
   targetReps: number
   workoutId: string
   existingSets: WorkoutSet[]
+  registerCollector: (exerciseId: string, collector: DraftCollector) => void
 }) {
-  const upsert = useUpsertWorkoutSet()
+  const upsert = useUpsertWorkoutSet(/* skipInvalidation */ true)
   const remove = useDeleteWorkoutSet()
   const { data: lastPerf } = useLastPerformance(exerciseId)
 
@@ -64,8 +75,43 @@ function ExerciseBlock({
   )
 
   const [drafts, setDrafts] = useState<SetDraft[]>([])
+  const initializedRef = useRef(false)
 
+  // Initialize drafts ONCE from server data (or template defaults)
+  // Only re-initialize if we haven't initialized yet, or if exerciseSets
+  // grow from the server side (e.g., page reload after screen lock)
   useEffect(() => {
+    if (initializedRef.current) {
+      // After initial load, only patch in new IDs for sets that were saved
+      // but don't overwrite the user's in-progress edits
+      setDrafts((prev) => {
+        // If server has sets that our drafts don't know about (e.g., page refresh),
+        // merge them in
+        const prevIds = new Set(prev.map((d) => d.id).filter(Boolean))
+        const newServerSets = exerciseSets.filter((s) => !prevIds.has(s.id))
+
+        if (newServerSets.length === 0) return prev
+
+        // Only add truly new sets (set_numbers we don't have)
+        const prevSetNumbers = new Set(prev.map((d) => d.set_number))
+        const toAdd = newServerSets
+          .filter((s) => !prevSetNumbers.has(s.set_number))
+          .map((s) => ({
+            id: s.id,
+            set_number: s.set_number,
+            weight_kg: Number(s.weight_kg),
+            reps: s.reps,
+            rir: s.rir,
+            is_warmup: s.is_warmup,
+            dirty: false,
+          }))
+
+        if (toAdd.length === 0) return prev
+        return [...prev, ...toAdd].sort((a, b) => a.set_number - b.set_number)
+      })
+      return
+    }
+
     if (exerciseSets.length > 0) {
       setDrafts(
         exerciseSets.map((s) => ({
@@ -75,9 +121,12 @@ function ExerciseBlock({
           reps: s.reps,
           rir: s.rir,
           is_warmup: s.is_warmup,
+          dirty: false,
         })),
       )
-    } else {
+      initializedRef.current = true
+    } else if (lastPerf !== undefined) {
+      // lastPerf query has settled (even if null)
       setDrafts(
         Array.from({ length: targetSets }, (_, i) => ({
           set_number: i + 1,
@@ -85,15 +134,28 @@ function ExerciseBlock({
           reps: targetReps,
           rir: 2,
           is_warmup: false,
+          dirty: false,
         })),
       )
+      initializedRef.current = true
     }
   }, [exerciseSets, targetSets, targetReps, lastPerf])
 
+  // Register collector so parent can batch-save on Finish
+  useEffect(() => {
+    registerCollector(exerciseId, () => drafts.filter((d) => d.dirty || !d.id))
+  }, [exerciseId, registerCollector, drafts])
+
+  // Debounced auto-save: save dirty drafts 800ms after last edit
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const savingRef = useRef(false)
+
   const saveSet = useCallback(
-    async (draft: SetDraft) => {
+    async (draft: SetDraft, index: number) => {
+      if (savingRef.current) return // Prevent concurrent saves for same set
+      savingRef.current = true
       try {
-        await upsert.mutateAsync({
+        const result = await upsert.mutateAsync({
           id: draft.id,
           workout_id: workoutId,
           exercise_id: exerciseId,
@@ -103,19 +165,54 @@ function ExerciseBlock({
           rir: draft.rir,
           is_warmup: draft.is_warmup,
         })
+        // Patch the returned ID into the local draft
+        setDrafts((prev) => {
+          const next = [...prev]
+          if (next[index]) {
+            next[index] = { ...next[index], id: result.id, dirty: false }
+          }
+          return next
+        })
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to save set')
+      } finally {
+        savingRef.current = false
       }
     },
     [upsert, workoutId, exerciseId],
   )
 
+  const scheduleSave = useCallback(
+    (index: number) => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = setTimeout(() => {
+        setDrafts((current) => {
+          const draft = current[index]
+          if (draft?.dirty) {
+            saveSet(draft, index)
+          }
+          return current
+        })
+      }, 800)
+    },
+    [saveSet],
+  )
+
   const updateDraft = (index: number, patch: Partial<SetDraft>) => {
     setDrafts((prev) => {
       const next = [...prev]
-      next[index] = { ...next[index], ...patch }
+      next[index] = { ...next[index], ...patch, dirty: true }
       return next
     })
+    scheduleSave(index)
+  }
+
+  const handleBlurSave = (index: number) => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    const draft = drafts[index]
+    if (draft?.dirty) {
+      saveSet(draft, index)
+    }
   }
 
   const addSet = () => {
@@ -128,6 +225,7 @@ function ExerciseBlock({
         reps: last?.reps ?? targetReps,
         rir: last?.rir ?? 2,
         is_warmup: false,
+        dirty: true,
       },
     ])
   }
@@ -142,7 +240,8 @@ function ExerciseBlock({
   }
 
   const addWeight = (index: number) => {
-    updateDraft(index, { weight_kg: roundWeight((drafts[index]?.weight_kg ?? 0) + 2.5) })
+    const newWeight = roundWeight((drafts[index]?.weight_kg ?? 0) + 2.5)
+    updateDraft(index, { weight_kg: newWeight })
   }
 
   return (
@@ -159,46 +258,49 @@ function ExerciseBlock({
           <div key={draft.set_number} className="rounded-lg border border-slate-800 p-3 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium text-slate-400">Set {draft.set_number}</span>
-              <label className="flex items-center gap-2 text-xs text-slate-400">
-                <Checkbox
-                  checked={draft.is_warmup}
-                  onChange={(e) => updateDraft(index, { is_warmup: e.target.checked })}
-                />
-                Warmup
-              </label>
+              <div className="flex items-center gap-2">
+                {draft.dirty && (
+                  <span className="h-2 w-2 rounded-full bg-amber-400" title="Unsaved changes" />
+                )}
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  <Checkbox
+                    checked={draft.is_warmup}
+                    onChange={(e) => updateDraft(index, { is_warmup: e.target.checked })}
+                  />
+                  Warmup
+                </label>
+              </div>
             </div>
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <Label className="text-xs">kg</Label>
-                <Input
-                  type="number"
-                  step="0.25"
-                  inputMode="decimal"
-                  value={draft.weight_kg || ''}
-                  onChange={(e) => updateDraft(index, { weight_kg: Number(e.target.value) })}
-                  onBlur={() => saveSet(drafts[index])}
+                <NumericInput
+                  value={draft.weight_kg}
+                  onValueChange={(v) => updateDraft(index, { weight_kg: v })}
+                  onBlur={() => handleBlurSave(index)}
+                  min={0}
+                  step={0.25}
+                  allowDecimal
                 />
               </div>
               <div>
                 <Label className="text-xs">Reps</Label>
-                <Input
-                  type="number"
-                  inputMode="numeric"
-                  value={draft.reps || ''}
-                  onChange={(e) => updateDraft(index, { reps: Number(e.target.value) })}
-                  onBlur={() => saveSet(drafts[index])}
+                <NumericInput
+                  value={draft.reps}
+                  onValueChange={(v) => updateDraft(index, { reps: v })}
+                  onBlur={() => handleBlurSave(index)}
+                  min={0}
+                  max={999}
                 />
               </div>
               <div>
                 <Label className="text-xs">RIR</Label>
-                <Input
-                  type="number"
+                <NumericInput
+                  value={draft.rir}
+                  onValueChange={(v) => updateDraft(index, { rir: v })}
+                  onBlur={() => handleBlurSave(index)}
                   min={0}
                   max={10}
-                  inputMode="numeric"
-                  value={draft.rir}
-                  onChange={(e) => updateDraft(index, { rir: Number(e.target.value) })}
-                  onBlur={() => saveSet(drafts[index])}
                 />
               </div>
             </div>
@@ -206,7 +308,7 @@ function ExerciseBlock({
               <Button size="sm" variant="outline" onClick={() => copyLast(index)} disabled={!lastPerf}>
                 <Copy className="h-3 w-3" /> Copy last
               </Button>
-              <Button size="sm" variant="outline" onClick={() => { addWeight(index); setTimeout(() => saveSet({ ...drafts[index], weight_kg: roundWeight(draft.weight_kg + 2.5) }), 0) }}>
+              <Button size="sm" variant="outline" onClick={() => addWeight(index)}>
                 +2.5 kg
               </Button>
               {draft.id && (
@@ -237,15 +339,53 @@ export function ActiveWorkoutPage() {
   const navigate = useNavigate()
   const { data: workout, isLoading } = useWorkout(id)
   const completeWorkout = useCompleteWorkout()
+  const batchUpsert = useBatchUpsertWorkoutSets()
 
   const templateExercises = useMemo(() => {
     const tes = workout?.template?.template_exercises ?? []
     return [...tes].sort((a, b) => a.sort_order - b.sort_order)
   }, [workout])
 
+  // Collect unsaved drafts from all exercise blocks
+  const collectorsRef = useRef<Map<string, DraftCollector>>(new Map())
+  const registerCollector = useCallback((exerciseId: string, collector: DraftCollector) => {
+    collectorsRef.current.set(exerciseId, collector)
+  }, [])
+
   const handleComplete = async () => {
     if (!id) return
     try {
+      // Batch save all unsaved drafts first
+      const allUnsaved: Array<{
+        workout_id: string
+        exercise_id: string
+        set_number: number
+        weight_kg: number
+        reps: number
+        rir: number
+        is_warmup: boolean
+        id?: string
+      }> = []
+      for (const [exerciseId, collector] of collectorsRef.current.entries()) {
+        const unsaved = collector()
+        for (const draft of unsaved) {
+          allUnsaved.push({
+            id: draft.id,
+            workout_id: id,
+            exercise_id: exerciseId,
+            set_number: draft.set_number,
+            weight_kg: draft.weight_kg,
+            reps: draft.reps,
+            rir: draft.rir,
+            is_warmup: draft.is_warmup,
+          })
+        }
+      }
+
+      if (allUnsaved.length > 0) {
+        await batchUpsert.mutateAsync(allUnsaved)
+      }
+
       await completeWorkout.mutateAsync(id)
       toast.success('Workout completed!')
       navigate('/history')
@@ -269,7 +409,7 @@ export function ActiveWorkoutPage() {
             <p className="text-sm text-slate-400">In progress</p>
           </div>
         </div>
-        <Button onClick={handleComplete} disabled={completeWorkout.isPending}>
+        <Button onClick={handleComplete} disabled={completeWorkout.isPending || batchUpsert.isPending}>
           <Check className="h-4 w-4" /> Finish
         </Button>
       </div>
@@ -284,6 +424,7 @@ export function ActiveWorkoutPage() {
             targetReps={te.target_reps}
             workoutId={workout.id}
             existingSets={workout.workout_sets ?? []}
+            registerCollector={registerCollector}
           />
         ))}
       </div>

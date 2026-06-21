@@ -197,3 +197,156 @@ export function useReorderTemplateExercises() {
     },
   })
 }
+
+// ─── Template Export/Import ─────────────────────────────────────────────────────
+
+export interface TemplateExportData {
+  version: 1
+  exported_at: string
+  template: {
+    name: string
+    description: string | null
+  }
+  exercises: Array<{
+    name: string
+    slug: string | null
+    category: string
+    movement_type: string
+    is_compound: boolean
+    sort_order: number
+    target_sets: number
+    target_reps: number
+    notes: string | null
+  }>
+}
+
+export function useExportTemplate() {
+  return useMutation({
+    mutationFn: async (templateId: string): Promise<TemplateExportData> => {
+      const { data, error } = await supabase
+        .from('templates')
+        .select('*, template_exercises(*, exercise:exercises(*))')
+        .eq('id', templateId)
+        .single()
+      if (error) throw error
+
+      const template = data as TemplateWithExercises
+      const exercises = [...template.template_exercises]
+        .sort((a, b) => a.sort_order - b.sort_order)
+        .map((te) => ({
+          name: te.exercise?.name ?? 'Unknown',
+          slug: te.exercise?.slug ?? null,
+          category: te.exercise?.category ?? 'Other',
+          movement_type: te.exercise?.movement_type ?? 'barbell',
+          is_compound: te.exercise?.is_compound ?? false,
+          sort_order: te.sort_order,
+          target_sets: te.target_sets,
+          target_reps: te.target_reps,
+          notes: te.notes ?? null,
+        }))
+
+      return {
+        version: 1,
+        exported_at: new Date().toISOString(),
+        template: {
+          name: template.name,
+          description: template.description,
+        },
+        exercises,
+      }
+    },
+  })
+}
+
+export function useImportTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (exportData: TemplateExportData) => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error('Not authenticated')
+
+      // 1. Create the template
+      const { data: newTemplate, error: tplError } = await supabase
+        .from('templates')
+        .insert({
+          user_id: user.id,
+          name: exportData.template.name,
+          description: exportData.template.description,
+          is_active: true,
+        })
+        .select()
+        .single()
+      if (tplError) throw tplError
+
+      // 2. For each exercise, find or create it
+      const exerciseIds: string[] = []
+      for (const ex of exportData.exercises) {
+        // Try to find by slug first
+        if (ex.slug) {
+          const { data: existing } = await supabase
+            .from('exercises')
+            .select('id')
+            .eq('user_id', user.id)
+            .eq('slug', ex.slug)
+            .maybeSingle()
+          if (existing) {
+            exerciseIds.push(existing.id)
+            continue
+          }
+        }
+
+        // Try to find by name (case-insensitive)
+        const { data: byName } = await supabase
+          .from('exercises')
+          .select('id')
+          .eq('user_id', user.id)
+          .ilike('name', ex.name)
+          .maybeSingle()
+        if (byName) {
+          exerciseIds.push(byName.id)
+          continue
+        }
+
+        // Create new exercise
+        const { data: created, error: exError } = await supabase
+          .from('exercises')
+          .insert({
+            user_id: user.id,
+            name: ex.name,
+            category: ex.category,
+            movement_type: ex.movement_type,
+            is_compound: ex.is_compound,
+            is_system: false,
+            slug: null,
+          })
+          .select()
+          .single()
+        if (exError) throw exError
+        exerciseIds.push(created.id)
+      }
+
+      // 3. Create template_exercises
+      const templateExercises = exportData.exercises.map((ex, i) => ({
+        template_id: newTemplate.id,
+        exercise_id: exerciseIds[i],
+        sort_order: ex.sort_order,
+        target_sets: ex.target_sets,
+        target_reps: ex.target_reps,
+        notes: ex.notes,
+      }))
+
+      if (templateExercises.length > 0) {
+        const { error: teError } = await supabase
+          .from('template_exercises')
+          .insert(templateExercises)
+        if (teError) throw teError
+      }
+
+      return newTemplate as Template
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['templates'] })
+      qc.invalidateQueries({ queryKey: ['exercises'] })
+    },
+  })
+}

@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Copy, Pencil, Trash2 } from 'lucide-react'
+import { Plus, Copy, Pencil, Trash2, Download, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   useTemplates,
@@ -8,6 +8,9 @@ import {
   useUpdateTemplate,
   useDeleteTemplate,
   useDuplicateTemplate,
+  useExportTemplate,
+  useImportTemplate,
+  type TemplateExportData,
 } from '@/features/templates/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -24,9 +27,12 @@ export function TemplatesPage() {
   const updateTemplate = useUpdateTemplate()
   const deleteTemplate = useDeleteTemplate()
   const duplicateTemplate = useDuplicateTemplate()
+  const exportTemplate = useExportTemplate()
+  const importTemplate = useImportTemplate()
   const [showForm, setShowForm] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -71,6 +77,58 @@ export function TemplatesPage() {
     }
   }
 
+  const handleExport = async (id: string, templateName: string) => {
+    try {
+      const data = await exportTemplate.mutateAsync(id)
+      const json = JSON.stringify(data, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${templateName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}_template.json`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      toast.success('Template exported')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to export template')
+    }
+  }
+
+  const handleImportClick = () => {
+    fileInputRef.current?.click()
+  }
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    try {
+      const text = await file.text()
+      const data = JSON.parse(text) as TemplateExportData
+
+      // Basic validation
+      if (!data.version || !data.template?.name || !Array.isArray(data.exercises)) {
+        throw new Error('Invalid template file format')
+      }
+
+      await importTemplate.mutateAsync(data)
+      toast.success(`Template "${data.template.name}" imported successfully`)
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        toast.error('Invalid JSON file')
+      } else {
+        toast.error(err instanceof Error ? err.message : 'Failed to import template')
+      }
+    }
+
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -78,10 +136,23 @@ export function TemplatesPage() {
           <h1 className="text-2xl font-bold">Templates</h1>
           <p className="text-slate-400">Create and manage workout templates</p>
         </div>
-        <Button onClick={() => setShowForm(true)}>
-          <Plus className="h-4 w-4" /> New
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={handleImportClick} disabled={importTemplate.isPending}>
+            <Upload className="h-4 w-4" /> Import
+          </Button>
+          <Button onClick={() => setShowForm(true)}>
+            <Plus className="h-4 w-4" /> New
+          </Button>
+        </div>
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json"
+        className="hidden"
+        onChange={handleImportFile}
+      />
 
       {showForm && (
         <Card>
@@ -136,6 +207,15 @@ export function TemplatesPage() {
                   </Link>
                   <Button size="icon" variant="ghost" onClick={() => handleDuplicate(t.id)}>
                     <Copy className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => handleExport(t.id, t.name)}
+                    disabled={exportTemplate.isPending}
+                    title="Export as JSON"
+                  >
+                    <Download className="h-4 w-4" />
                   </Button>
                   <Button size="icon" variant="ghost" onClick={() => handleDelete(t.id)}>
                     <Trash2 className="h-4 w-4" />

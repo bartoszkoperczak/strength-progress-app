@@ -29,6 +29,7 @@ import {
 import { useExercises, useCreateExercise } from '@/features/exercises/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { NumericInput } from '@/components/ui/NumericInput'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -57,20 +58,22 @@ function SortableExercise({
         <div className="mt-2 flex gap-3">
           <div className="flex items-center gap-1">
             <Label className="text-xs">Sets</Label>
-            <Input
-              type="number"
+            <NumericInput
               className="h-9 w-16"
               value={item.target_sets}
-              onChange={(e) => onUpdate(item.id, Number(e.target.value), item.target_reps)}
+              onValueChange={(v) => onUpdate(item.id, v, item.target_reps)}
+              min={1}
+              max={20}
             />
           </div>
           <div className="flex items-center gap-1">
             <Label className="text-xs">Reps</Label>
-            <Input
-              type="number"
+            <NumericInput
               className="h-9 w-16"
               value={item.target_reps}
-              onChange={(e) => onUpdate(item.id, item.target_sets, Number(e.target.value))}
+              onValueChange={(v) => onUpdate(item.id, item.target_sets, v)}
+              min={1}
+              max={100}
             />
           </div>
         </div>
