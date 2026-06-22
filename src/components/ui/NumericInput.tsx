@@ -69,11 +69,13 @@ export const NumericInput = forwardRef<HTMLInputElement, NumericInputProps>(
       }
 
       // For decimal input, allow partial states like "5." or "12.0"
+      // Normalize comma to period for European/Polish decimal keyboards
       if (allowDecimal) {
-        if (/^-?\d*\.?\d*$/.test(raw)) {
-          setDisplay(raw)
+        const normalized = raw.replace(',', '.')
+        if (/^-?\d*\.?\d*$/.test(normalized)) {
+          setDisplay(normalized)
           // Also update the numeric value in real time for responsiveness
-          const parsed = parseFloat(raw)
+          const parsed = parseFloat(normalized)
           if (!isNaN(parsed)) {
             const clamped = clamp(parsed)
             onValueChange(clamped)

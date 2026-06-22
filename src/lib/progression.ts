@@ -5,12 +5,15 @@ export interface ProgressionSuggestion {
   message: string
   exerciseId: string
   exerciseName: string
+  /** Suggested weight in kg (only for 'increase' / 'decrease' types) */
+  suggestedWeightKg?: number
 }
 
 export interface SessionSet {
   reps: number
   rir: number
   is_warmup: boolean
+  weight_kg?: number
 }
 
 export interface SessionData {
@@ -24,13 +27,33 @@ export interface SessionData {
 export function evaluateSession(
   sets: SessionSet[],
   targetReps: number,
-): { hitTarget: boolean; lastRir: number | null } {
+): { hitTarget: boolean; avgRir: number | null; maxWeight: number | null } {
   const working = sets.filter((s) => !s.is_warmup)
-  if (working.length === 0) return { hitTarget: false, lastRir: null }
+  if (working.length === 0) return { hitTarget: false, avgRir: null, maxWeight: null }
 
   const hitTarget = working.every((s) => s.reps >= targetReps)
-  const lastRir = working[working.length - 1]?.rir ?? null
-  return { hitTarget, lastRir }
+  const avgRir = working.reduce((sum, s) => sum + s.rir, 0) / working.length
+  const maxWeight = working.reduce((max, s) => Math.max(max, s.weight_kg ?? 0), 0) || null
+  return { hitTarget, avgRir, maxWeight }
+}
+
+/**
+ * Calculate a realistic weight increment based on the current weight.
+ * Uses ~2% of current weight, rounded to the nearest plate increment (0.25 kg).
+ * Clamped between 0.5 kg (minimum useful increase) and 2.5 kg (maximum single jump).
+ */
+export function calculateIncrement(currentWeightKg: number): number {
+  if (currentWeightKg <= 0) return 1.25
+  const raw = currentWeightKg * 0.02 // 2% increase
+  const rounded = Math.round(raw * 4) / 4 // round to nearest 0.25
+  return Math.max(0.5, Math.min(2.5, rounded))
+}
+
+/**
+ * Round a weight to the nearest 0.25 kg plate increment.
+ */
+function roundToPlate(kg: number): number {
+  return Math.round(kg * 4) / 4
 }
 
 export function getProgressionSuggestions(
@@ -65,43 +88,74 @@ export function getProgressionSuggestions(
     const latestEval = evaluateSession(latest.sets, latest.targetReps)
     const prevEval = evaluateSession(previous.sets, previous.targetReps)
 
+    // Increase: both sessions hit target reps AND average RIR >= 1
+    // (lifter had reps in reserve — room to add weight)
     if (
       latestEval.hitTarget &&
       prevEval.hitTarget &&
-      latestEval.lastRir !== null &&
-      prevEval.lastRir !== null &&
-      latestEval.lastRir >= 2 &&
-      prevEval.lastRir >= 2
+      latestEval.avgRir !== null &&
+      prevEval.avgRir !== null &&
+      latestEval.avgRir >= 1 &&
+      prevEval.avgRir >= 1
     ) {
-      suggestions.push({
-        type: 'increase',
-        message: 'Add 2.5 kg next session — target reps hit with RIR ≥ 2 for 2 sessions.',
-        exerciseId,
-        exerciseName: latest.exerciseName,
-      })
+      const currentWeight = latestEval.maxWeight
+      if (currentWeight && currentWeight > 0) {
+        const increment = calculateIncrement(currentWeight)
+        const suggestedWeight = roundToPlate(currentWeight + increment)
+        suggestions.push({
+          type: 'increase',
+          message: `Add ${increment} kg → ${suggestedWeight} kg next session (target reps hit with RIR ≥ 1 for 2 sessions).`,
+          exerciseId,
+          exerciseName: latest.exerciseName,
+          suggestedWeightKg: suggestedWeight,
+        })
+      } else {
+        suggestions.push({
+          type: 'increase',
+          message: 'Increase weight next session — target reps hit with RIR ≥ 1 for 2 sessions.',
+          exerciseId,
+          exerciseName: latest.exerciseName,
+        })
+      }
       continue
     }
 
+    // Maintain: hit target but near failure (average RIR < 1)
     if (
-      latestEval.lastRir === 0 &&
-      prevEval.lastRir === 0
+      latestEval.hitTarget &&
+      latestEval.avgRir !== null &&
+      latestEval.avgRir < 1
     ) {
       suggestions.push({
         type: 'maintain',
-        message: 'Maintain weight — near failure (RIR 0) for 2 sessions.',
+        message: 'Maintain weight — near failure (avg RIR < 1). Focus on improving RIR over time.',
         exerciseId,
         exerciseName: latest.exerciseName,
       })
       continue
     }
 
+    // Decrease: below target reps for 2 consecutive sessions
     if (!latestEval.hitTarget && !prevEval.hitTarget) {
-      suggestions.push({
-        type: 'decrease',
-        message: 'Reduce 2.5 kg or drop 1 set — below target reps for 2 sessions.',
-        exerciseId,
-        exerciseName: latest.exerciseName,
-      })
+      const currentWeight = latestEval.maxWeight
+      if (currentWeight && currentWeight > 0) {
+        const reduction = roundToPlate(currentWeight * 0.05) // 5% reduction
+        const suggestedWeight = roundToPlate(currentWeight - Math.max(reduction, 1.25))
+        suggestions.push({
+          type: 'decrease',
+          message: `Reduce to ${suggestedWeight} kg (−${Math.max(reduction, 1.25)} kg) — below target reps for 2 sessions.`,
+          exerciseId,
+          exerciseName: latest.exerciseName,
+          suggestedWeightKg: suggestedWeight,
+        })
+      } else {
+        suggestions.push({
+          type: 'decrease',
+          message: 'Reduce weight or drop 1 set — below target reps for 2 sessions.',
+          exerciseId,
+          exerciseName: latest.exerciseName,
+        })
+      }
     }
   }
 

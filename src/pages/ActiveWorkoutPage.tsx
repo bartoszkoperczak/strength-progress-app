@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Check, Copy, Plus, ArrowLeft, Trophy } from 'lucide-react'
+import { Check, Copy, Plus, ArrowLeft, Trophy, Save, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   useWorkout,
@@ -32,6 +32,8 @@ interface SetDraft {
   is_warmup: boolean
   /** True if this draft has unsaved changes */
   dirty: boolean
+  /** True after a successful save (resets on next edit) */
+  saved: boolean
 }
 
 function LastTimeBanner({ exerciseId }: { exerciseId: string }) {
@@ -109,6 +111,7 @@ function ExerciseBlock({
             rir: s.rir,
             is_warmup: s.is_warmup,
             dirty: false,
+            saved: true,
           }))
 
         if (toAdd.length === 0) return prev
@@ -128,6 +131,7 @@ function ExerciseBlock({
           rir: s.rir,
           is_warmup: s.is_warmup,
           dirty: false,
+          saved: true,
         })),
       )
       initializedRef.current = true
@@ -137,9 +141,10 @@ function ExerciseBlock({
           set_number: i + 1,
           weight_kg: lastPerf ? Number(lastPerf.weight_kg) : 0,
           reps: targetReps,
-          rir: 2,
+          rir: 0,
           is_warmup: false,
           dirty: false,
+          saved: false,
         })),
       )
       initializedRef.current = true
@@ -175,7 +180,7 @@ function ExerciseBlock({
         setDrafts((prev) => {
           const next = [...prev]
           if (next[index]) {
-            next[index] = { ...next[index], id: result.id, dirty: false }
+            next[index] = { ...next[index], id: result.id, dirty: false, saved: true }
           }
           return next
         })
@@ -226,7 +231,7 @@ function ExerciseBlock({
   const updateDraft = (index: number, patch: Partial<SetDraft>) => {
     setDrafts((prev) => {
       const next = [...prev]
-      const updated = { ...next[index], ...patch, dirty: true }
+      const updated = { ...next[index], ...patch, dirty: true, saved: false }
       next[index] = updated
       return next
     })
@@ -241,6 +246,22 @@ function ExerciseBlock({
     }
   }
 
+  const handleManualSave = (index: number) => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    const draft = drafts[index]
+    if (draft) {
+      saveSet({ ...draft, dirty: true }, index)
+    }
+  }
+
+  const handleRemoveSet = async (index: number) => {
+    const draft = drafts[index]
+    if (draft?.id) {
+      await remove.mutateAsync({ id: draft.id, workoutId })
+    }
+    setDrafts((d) => d.filter((_, i) => i !== index).map((s, i) => ({ ...s, set_number: i + 1 })))
+  }
+
   const addSet = () => {
     const last = drafts[drafts.length - 1]
     setDrafts([
@@ -249,9 +270,10 @@ function ExerciseBlock({
         set_number: drafts.length + 1,
         weight_kg: last?.weight_kg ?? 0,
         reps: last?.reps ?? targetReps,
-        rir: last?.rir ?? 2,
+        rir: last?.rir ?? 0,
         is_warmup: false,
         dirty: true,
+        saved: false,
       },
     ])
   }
@@ -308,6 +330,11 @@ function ExerciseBlock({
                       <Trophy className="mr-0.5 h-2.5 w-2.5" />PR
                     </Badge>
                   )}
+                  {draft.saved && !draft.dirty && (
+                    <span className="flex items-center gap-0.5 text-[11px] font-medium text-emerald-400">
+                      <Check className="h-3 w-3" />Saved
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   {draft.dirty && (
@@ -355,25 +382,29 @@ function ExerciseBlock({
                   />
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" onClick={() => copyLast(index)} disabled={!lastPerf}>
                   <Copy className="h-3 w-3" /> Copy last
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => addWeight(index)}>
                   +2.5 kg
                 </Button>
-                {draft.id && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={async () => {
-                      await remove.mutateAsync({ id: draft.id!, workoutId })
-                      setDrafts((d) => d.filter((_, i) => i !== index).map((s, i) => ({ ...s, set_number: i + 1 })))
-                    }}
-                  >
-                    Remove
-                  </Button>
-                )}
+                <Button
+                  size="sm"
+                  variant={draft.dirty ? 'default' : 'outline'}
+                  onClick={() => handleManualSave(index)}
+                  disabled={!draft.dirty && draft.saved}
+                >
+                  <Save className="h-3 w-3" /> Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  onClick={() => handleRemoveSet(index)}
+                >
+                  <Trash2 className="h-3 w-3" /> Remove
+                </Button>
               </div>
             </div>
           )

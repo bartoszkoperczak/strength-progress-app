@@ -119,7 +119,7 @@ export function DashboardPage() {
         sets: [] as SessionSet[],
         completedAt: w.completed_at,
       }
-      existing.sets.push({ reps: s.reps, rir: s.rir, is_warmup: s.is_warmup })
+      existing.sets.push({ reps: s.reps, rir: s.rir, is_warmup: s.is_warmup, weight_kg: Number(s.weight_kg) })
       sessionMap.set(key, existing)
     }
     const sessions = Array.from(sessionMap.values())
